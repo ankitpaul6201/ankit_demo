@@ -1,1 +1,292 @@
-<p>its for my github</p>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>3D Bike Racing — Final Controls Fix</title>
+  <style>
+    html,body{height:100%;margin:0;background:#111;color:#fff;font-family:Arial}
+    #game{width:100%;height:100vh;display:block;position:relative;}
+    .overlay{position:absolute;left:12px;top:12px;z-index:10}
+    .ui{background:rgba(0,0,0,0.6);padding:10px;border-radius:8px}
+    .center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:11}
+    button{padding:8px 12px;margin:6px;border-radius:6px;border:none;background:#28a745;color:#fff}
+    .hint{opacity:0.95;font-size:13px;margin-top:6px}
+    .debug{position:absolute;right:12px;top:12px;background:rgba(0,0,0,0.6);padding:8px;border-radius:6px;font-size:13px}
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+
+  <div class="overlay">
+    <div class="ui">
+      <div>Speed: <span id="speed">0</span></div>
+      <div>Distance: <span id="dist">0</span></div>
+      <div>Traffic: <span id="trafficCount">0</span></div>
+      <div style="margin-top:6px;">
+        <button id="invertBtn">Invert Controls: OFF</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="debug ui" id="debug">
+    <div>invert: <span id="dbgInvert">false</span></div>
+    <div>bike.x: <span id="dbgX">0</span></div>
+    <div>lastKey: <span id="dbgKey">none</span></div>
+  </div>
+
+  <div class="center" id="centerUI">
+    <div class="ui" id="startUI">
+      <h2 style="margin:6px 0">3D Bike Racing</h2>
+      <div class="hint">Use ← / → (or A / D) to steer. Drag on mobile. If directions feel reversed, toggle "Invert Controls".</div>
+      <div style="margin-top:8px;text-align:center">
+        <button id="startBtn">Start Game</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+    </div>
+    <div class="ui" id="gameOverUI" style="display:none">
+      <h2 style="margin:6px 0">Game Over</h2>
+      <div id="gameOverText" class="hint"></div>
+      <div style="margin-top:8px;text-align:center"><button id="retryBtn">Retry</button></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.min.js"></script>
+  <script>
+  // --- Scene setup ---
+  const container = document.getElementById('game');
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(0x111111, 20, 140);
+
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 6, -12);
+  camera.lookAt(0,1,0);
+
+  const renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x111111);
+  container.appendChild(renderer.domElement);
+
+  // Lights
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
+  hemi.position.set(0,50,0); scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.6); dir.position.set(-5,20,10); scene.add(dir);
+
+  // Ground and track
+  const groundMat = new THREE.MeshStandardMaterial({color:0x2b2b2b});
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(400,400), groundMat);
+  ground.rotation.x = -Math.PI/2; ground.position.y = 0; scene.add(ground);
+
+  const trackWidth = 8;
+  const track = new THREE.Mesh(new THREE.PlaneGeometry(400, trackWidth), new THREE.MeshStandardMaterial({color:0x333333}));
+  track.rotation.x = -Math.PI/2; track.position.y = 0.01; scene.add(track);
+
+  // Corridor walls
+  const wallHeight = 3; const wallThickness = 0.5;
+  const leftWall = new THREE.Mesh(new THREE.BoxGeometry(wallThickness, wallHeight, 400), new THREE.MeshStandardMaterial({color:0x555555}));
+  leftWall.position.set(-trackWidth/2 - wallThickness/2, wallHeight/2, 0); scene.add(leftWall);
+  const rightWall = leftWall.clone(); rightWall.position.x = trackWidth/2 + wallThickness/2; scene.add(rightWall);
+
+  // simple bike model creator
+  function createBike(color){
+    const bikeObj = new THREE.Object3D();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.3,1.5), new THREE.MeshStandardMaterial({color:color}));
+    body.position.y = 0.75; bikeObj.add(body);
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.05,0.2), new THREE.MeshStandardMaterial({color:0x222222}));
+    handle.position.set(0,1.0,0.5); bikeObj.add(handle);
+    const wheelGeo = new THREE.CylinderGeometry(0.3,0.3,0.1,12);
+    const wheelMat = new THREE.MeshStandardMaterial({color:0x000000});
+    const frontWheel = new THREE.Mesh(wheelGeo, wheelMat);
+    frontWheel.rotation.z = Math.PI/2; frontWheel.position.set(0,0.3,0.75);
+    const backWheel = frontWheel.clone(); backWheel.position.z = -0.75;
+    bikeObj.add(frontWheel); bikeObj.add(backWheel);
+    return bikeObj;
+  }
+
+  // player bike
+  const bike = createBike(0xff3333);
+  bike.position.set(0,0,-10);
+  scene.add(bike);
+
+  // trees
+  const treeGroup = new THREE.Group();
+  const treeTrunk = new THREE.CylinderGeometry(0.12,0.12,1.2,8);
+  const treeHead = new THREE.ConeGeometry(0.7,1.6,8);
+  for(let i=0;i<80;i++){
+    const z = -i*5 + 20;
+    for(const side of [-1,1]){
+      const trunkMat = new THREE.MeshStandardMaterial({color:0x6b3b1f});
+      const headMat = new THREE.MeshStandardMaterial({color:0x116622});
+      const trunk = new THREE.Mesh(treeTrunk, trunkMat);
+      const head = new THREE.Mesh(treeHead, headMat);
+      const x = side*(trackWidth/2 + 3 + Math.random()*2);
+      trunk.position.set(x,0.6, z + (Math.random()-0.5)*2);
+      head.position.set(x,1.6, z + (Math.random()-0.5)*2);
+      treeGroup.add(trunk); treeGroup.add(head);
+    }
+  }
+  scene.add(treeGroup);
+
+  // traffic (other bikes)
+  const trafficGroup = new THREE.Group(); scene.add(trafficGroup);
+  function spawnTraffic(zPos){
+    const laneOffsets = [-2.4, 0, 2.4];
+    const lane = laneOffsets[Math.floor(Math.random()*laneOffsets.length)];
+    const trafficBike = createBike(Math.random()*0xffffff);
+    trafficBike.position.set(lane,0,zPos);
+    trafficGroup.add(trafficBike);
+  }
+
+  // controls & state
+  let leftPressed = false, rightPressed = false; let started=false, gameOver=false;
+  let invertControls = false;
+  let speed = 0.12; let baseSpeed = 0.12; let acceleration = 0.00008; let distance = 0;
+  const speedLabel = document.getElementById('speed');
+  const distLabel = document.getElementById('dist');
+  const trafficLabel = document.getElementById('trafficCount');
+  const dbgInvert = document.getElementById('dbgInvert');
+  const dbgX = document.getElementById('dbgX');
+  const dbgKey = document.getElementById('dbgKey');
+  const invertBtn = document.getElementById('invertBtn');
+
+  // initial traffic
+  for(let i=0;i<10;i++){ spawnTraffic(40 + i*12 + Math.random()*8); }
+
+  // resize
+  window.addEventListener('resize', ()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);});
+
+  // keyboard handlers (explicit and unambiguous)
+  window.addEventListener('keydown', (e)=>{
+    const key = (e.key || '').toLowerCase();
+    dbgKey.innerText = key;
+    if(key === 'arrowleft' || key === 'a') leftPressed = true;
+    if(key === 'arrowright' || key === 'd') rightPressed = true;
+    if(key === 'i') { invertControls = !invertControls; updateInvertUI(); }
+  }, {passive:true});
+
+  window.addEventListener('keyup', (e)=>{
+    const key = (e.key || '').toLowerCase();
+    if(key === 'arrowleft' || key === 'a') leftPressed = false;
+    if(key === 'arrowright' || key === 'd') rightPressed = false;
+  }, {passive:true});
+
+  invertBtn.onclick = ()=>{ invertControls = !invertControls; updateInvertUI(); };
+  function updateInvertUI(){ invertBtn.innerText = `Invert Controls: ${invertControls ? 'ON' : 'OFF'}`; dbgInvert.innerText = invertControls; }
+  updateInvertUI();
+
+  // collision helper
+  function aabbCollision(objA, objB){
+    objA.updateMatrixWorld(); objB.updateMatrixWorld();
+    const boxA = new THREE.Box3().setFromObject(objA);
+    const boxB = new THREE.Box3().setFromObject(objB);
+    return boxA.intersectsBox(boxB);
+  }
+
+  // game loop
+  let lastTime = performance.now();
+  function animate(now){
+    requestAnimationFrame(animate);
+    const dt = Math.min(0.05, (now - lastTime)/1000);
+    lastTime = now;
+    if(started && !gameOver){
+      // speed & movement forward
+      speed += acceleration * dt * 1000;
+      distance += speed * 60 * dt;
+      bike.position.z += speed * 60 * dt;
+
+      // move environment
+      treeGroup.children.forEach(c=>{ c.position.z += -speed*60*dt; if(c.position.z < -200) c.position.z += 400; });
+
+      // spawn traffic
+      if(Math.random() < 0.02 + Math.min(0.08, distance/10000)){
+        spawnTraffic(120 + Math.random()*60);
+      }
+
+      // move traffic and detect collisions
+      trafficGroup.children.forEach((tb, idx)=>{
+        tb.position.z -= (baseSpeed*40 + speed*20) * dt;
+        tb.position.x += Math.sin(now*0.001 + idx) * 0.002;
+        if(tb.position.z < -50){ trafficGroup.remove(tb); }
+        if(aabbCollision(tb, bike)){
+          gameOver = true;
+          showGameOver();
+        }
+      });
+
+      // STEERING: explicit and ONLY affects bike.position.x (world X)
+      // left should move bike left (decrease X), right should move bike right (increase X)
+      // invertControls flips the sign.
+      const steerSpeed = 7.5 * dt * (0.8 + speed);
+      let moveX = 0;
+      if(leftPressed) moveX -= steerSpeed;
+      if(rightPressed) moveX += steerSpeed;
+      if(invertControls) moveX = -moveX;
+      bike.position.x += moveX;
+
+      // clamp to corridor (world X)
+      const minX = -trackWidth/2 + 0.5; const maxX = trackWidth/2 - 0.5;
+      if(bike.position.x < minX) bike.position.x = minX;
+      if(bike.position.x > maxX) bike.position.x = maxX;
+
+      // camera follow
+      camera.position.x += (bike.position.x - camera.position.x) * 0.1;
+      camera.position.z = bike.position.z - 12;
+      camera.position.y = 6;
+      camera.lookAt(bike.position.x,1.2,bike.position.z+4);
+
+      // update UI & debug
+      speedLabel.innerText = (speed*60).toFixed(1);
+      distLabel.innerText = Math.floor(distance);
+      trafficLabel.innerText = trafficGroup.children.length;
+      dbgX.innerText = bike.position.x.toFixed(3);
+    }
+    renderer.render(scene, camera);
+  }
+  animate(performance.now());
+
+  // UI handlers
+  const startBtn = document.getElementById('startBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const retryBtn = document.getElementById('retryBtn');
+  const startUI = document.getElementById('startUI');
+  const gameOverUI = document.getElementById('gameOverUI');
+
+  startBtn.onclick = ()=>{ started=true; startUI.style.display='none'; }
+  resetBtn.onclick = resetGame;
+  retryBtn.onclick = ()=>{ resetGame(); started=true; startUI.style.display='none'; };
+
+  function showGameOver(){
+    document.getElementById('gameOverText').innerText = `Distance: ${Math.floor(distance)} — Speed: ${(speed*60).toFixed(1)}`;
+    startUI.style.display='none'; gameOverUI.style.display='block';
+  }
+
+  function resetGame(){
+    while(trafficGroup.children.length) trafficGroup.remove(trafficGroup.children[0]);
+    for(let i=0;i<12;i++){ spawnTraffic(40 + i*12 + Math.random()*18); }
+    bike.position.set(0,0,-10);
+    speed = baseSpeed; distance = 0; gameOver=false; started=false;
+    startUI.style.display='block'; gameOverUI.style.display='none';
+    dbgKey.innerText = 'none';
+    dbgX.innerText = bike.position.x.toFixed(3);
+  }
+
+  // Touch steering: use dx to modify world X only (consistent with keyboard)
+  let touchStartX = null;
+  window.addEventListener('touchstart', (e)=>{ if(e.touches && e.touches[0]) touchStartX = e.touches[0].clientX; });
+  window.addEventListener('touchmove', (e)=>{ 
+    if(touchStartX === null) return; 
+    const tx = e.touches[0].clientX; 
+    const dx = tx - touchStartX; 
+    // positive dx (drag right) should increase world X (move right) when invertControls=false
+    let deltaX = dx * 0.01;
+    if(invertControls) deltaX = -deltaX;
+    bike.position.x += deltaX;
+    touchStartX = tx; 
+  }, {passive:true});
+  window.addEventListener('touchend', ()=>{ touchStartX=null; });
+
+  // start with UI visible
+  resetGame();
+  </script>
+</body>
+</html>
